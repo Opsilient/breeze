@@ -1,0 +1,31 @@
+name: upstream-only
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  upstream-only:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Only upstream commits (or our two workflow files) may land on main
+        run: |
+          set -euo pipefail
+          files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/${{ github.event.pull_request.number }}/files" --jq '.[].filename')
+          if [ -n "$files" ] && ! grep -qvxE '\.github/workflows/(build-arm64|upstream-only)\.yml' <<<"$files"; then
+            echo "PR only touches our own workflow files; OK"; exit 0
+          fi
+          git remote add upstream https://github.com/lanternops/breeze.git
+          git fetch --no-tags upstream '+refs/heads/*:refs/remotes/upstream/*' '+refs/tags/*:refs/tags/*'
+          for sha in $(git rev-list "origin/$GITHUB_BASE_REF..${{ github.event.pull_request.head.sha }}"); do
+            git merge-base --is-ancestor "$sha" upstream/main && continue
+            git branch -r --contains "$sha" | grep -q 'upstream/' && continue
+            [ -n "$(git tag --contains "$sha")" ] && continue
+            echo "::error::non-upstream commit $sha: $(git log -1 --format=%s "$sha")"
+            echo "main is an upstream mirror; put internal work on an opsilient/* branch"
+            exit 1
+          done
+          echo "all commits are from upstream; OK"
